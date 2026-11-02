@@ -3,7 +3,7 @@ import { resolveConfig } from "./src/config.js"
 import { saveConfigFile } from "./src/configfile.js"
 import { MIC_HELP, SOUND_HELP } from "./src/help.js"
 import { startRecording, type Recording } from "./src/recorder.js"
-import { claimOnce, isSpeakerOwner, speak, stopSpeaking } from "./src/speech.js"
+import { claimOnce, isSpeakerOwner, speak, stopSpeaking, streamSpeech, StreamingText } from "./src/speech.js"
 import { transcribe } from "./src/transcribe.js"
 
 /** `/mic <arg>` subcommands. */
@@ -189,42 +189,75 @@ export default Plugin.define({
     const globalScope = globalThis as Record<symbol, unknown>
     if (!globalScope[spokenKey]) globalScope[spokenKey] = new Set<string>()
     const spoken = globalScope[spokenKey] as Set<string>
+    const streams = new Map<string, { sessionID: string; text: StreamingText; speech?: ReturnType<typeof streamSpeech> }>()
 
     const speech = new AbortController()
     void (async () => {
       for await (const event of ctx.event.subscribe({ signal: speech.signal })) {
-        if (event.type !== "session.text.ended" && event.type !== "session.reasoning.ended") continue
-        const reasoning = event.type === "session.reasoning.ended"
-
-        const { sessionID, assistantMessageID, ordinal, text } = event.data
-        if (!text || !text.trim()) continue
-
-        refresh()
-        if (reasoning && !cfg.ttsReasoning) continue
-
-        const key = `${reasoning ? "reasoning" : "text"}:${sessionID}:${assistantMessageID}:${ordinal}`
-        if (spoken.has(key)) continue
-        spoken.add(key)
-        if (spoken.size > 2000) spoken.clear()
-
-        try {
-          const info = await ctx.session.get({ sessionID })
-          if (info.parentID) continue
-        } catch {
+        if (event.type === "session.execution.interrupted" || event.type === "session.execution.failed") {
+          for (const [key, stream] of streams) {
+            if (stream.sessionID !== event.data.sessionID) continue
+            stream.speech?.end()
+            streams.delete(key)
+            stopSpeaking()
+          }
           continue
         }
-
-        // Only one server process on this machine speaks; and each message once.
-        if (!(await isSpeakerOwner())) continue
-        if (!(await claimOnce(key))) continue
+        if (event.type !== "session.text.delta" && event.type !== "session.text.ended" && event.type !== "session.reasoning.ended") continue
+        const reasoning = event.type === "session.reasoning.ended"
+        const { sessionID, assistantMessageID, ordinal } = event.data
+        const key = `${reasoning ? "reasoning" : "text"}:${sessionID}:${assistantMessageID}:${ordinal}`
 
         refresh()
-        void speak(cfg, text)
+        if (!cfg.tts) {
+          streams.get(key)?.speech?.end()
+          streams.delete(key)
+          continue
+        }
+        if (reasoning && !cfg.ttsReasoning) continue
+
+        const existing = streams.get(key)
+        const streaming = !!existing || (cfg.ttsStreaming && cfg.ttsEngine === "command")
+        if (!existing && spoken.has(key)) continue
+        if (event.type === "session.text.delta" && !streaming) continue
+
+        if (!existing) {
+          try {
+            const info = await ctx.session.get({ sessionID })
+            if (info.parentID) continue
+          } catch {
+            continue
+          }
+          if (!(await isSpeakerOwner())) continue
+          if (!(await claimOnce(key))) continue
+          spoken.add(key)
+          if (spoken.size > 2000) spoken.clear()
+        }
+
+        if (streaming && !reasoning) {
+          const stream = existing ?? { sessionID, text: new StreamingText() }
+          streams.set(key, stream)
+          const clean = event.type === "session.text.delta"
+            ? stream.text.append(event.data.delta)
+            : stream.text.finish(event.data.text)
+          if (clean) {
+            stream.speech ??= streamSpeech(cfg)
+            stream.speech.write(clean)
+          }
+          if (event.type === "session.text.ended") {
+            stream.speech?.end()
+            streams.delete(key)
+          }
+        } else if (event.type !== "session.text.delta") {
+          void speak(cfg, event.data.text)
+        }
       }
     })().catch(() => {})
 
     return () => {
       speech.abort()
+      for (const stream of streams.values()) stream.speech?.end()
+      streams.clear()
       stopSpeaking()
       if (timer) clearTimeout(timer)
       if (recording) void recording.abort()

@@ -268,6 +268,7 @@ Configure with environment variables (set them before launching `opencode`, then
 | Variable                       | Default                | Purpose                                                            |
 | ------------------------------ | ---------------------- | ------------------------------------------------------------------ |
 | `OPENCODE_VOICE_TTS`           | `1`                    | Set to `0` to disable speech.                                      |
+| `OPENCODE_VOICE_TTS_STREAMING` | `0`                    | Stream live text to a compatible stdin command (opt-in).          |
 | `OPENCODE_VOICE_TTS_ENGINE`    | auto (`command`)       | `command` (bundled edge-tts), `spd-say`, or your own command.      |
 | `OPENCODE_VOICE_TTS_AUTO`      | `1`                    | Auto-detect PT/EN/FR and pick the matching voice (EN when unclear). |
 | `OPENCODE_VOICE_TTS_REASONING` | `0`                    | Set to `1` to also speak the agent's reasoning ("thinking") text.  |
@@ -287,6 +288,40 @@ Voice mapping: `pt` → `pt-PT-RaquelNeural`, `pt-br` → `pt-BR-FranciscaNeural
 OPENCODE_VOICE_TTS_VOICE=pt-PT-DuarteNeural      # male European Portuguese
 OPENCODE_VOICE_TTS_VOICE_EN=en-GB-SoniaNeural    # British English
 ```
+
+### Streaming speech (opt-in)
+
+If your TTS command accepts incremental UTF-8 text on stdin and plays audio
+before stdin closes, enable `ttsStreaming` in `~/.config/opencode/voice.json`:
+
+```json
+{
+  "tts": true,
+  "ttsEngine": "command",
+  "ttsCommand": "my-streaming-tts-command",
+  "ttsStreaming": true,
+  "ttsMaxChars": 1500
+}
+```
+
+The plugin forwards `session.text.delta` events instead of waiting for
+`session.text.ended`. It holds incomplete words, code, links, and Markdown
+markers back; the final text event flushes the tail without repeating words
+already sent. Each text part uses one queued child process. Stopping speech
+invalidates queued streams and terminates the active process group.
+
+`ttsMaxChars` is respected without splitting a word (`0` disables the limit).
+Reasoning remains opt-in and is narrated only after its part ends. The command
+receives the selected voice in `OPENCODE_VOICE_EDGE_VOICE` and its queue timestamp
+in `OPENCODE_TTS_QUEUED_AT_MS` (Unix milliseconds), which an external stop helper
+can use to reject jobs queued before a global stop.
+
+This adds no provider dependency or API keys to the plugin. Commands using a
+`{text}` placeholder are not compatible; they must read stdin. A command that
+waits for EOF (including the bundled edge-tts wrapper) still waits for the full
+text part, even with this option enabled. Speech Dispatcher continues using
+the completed-text path. With the default `ttsStreaming: false`, behavior is
+unchanged.
 
 ### Sound commands
 

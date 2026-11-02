@@ -126,6 +126,102 @@ export function speak(cfg: VoiceConfig, raw: string): Promise<void> {
   return st.queue as Promise<void>
 }
 
+/** One serialized child process with a stdin that stays open as text arrives. */
+export function streamSpeech(cfg: VoiceConfig) {
+  const st = state()
+  const generation = st.generation
+  const queuedAt = Date.now()
+  let child: import("node:child_process").ChildProcess | undefined
+  let ended = false
+  let characters = 0
+  const pending: string[] = []
+  const end = () => {
+    ended = true
+    if (child?.stdin && !child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end()
+  }
+  st.queue = st.queue.then(async () => {
+    if (!cfg.tts || state().generation !== generation) return
+    await withPlaybackLock(async () => {
+      if (state().generation !== generation) return
+      const { cp } = await node()
+      const command = cfg.ttsCommand
+      if (!command || command.includes("{text}")) throw new Error("Streaming speech needs a stdin command")
+      const args = platform() === "win32" ? ["/d", "/s", "/c", command] : ["-c", command]
+      const baseEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {}
+      const voice = pickVoice(cfg, pending.join("")).voice
+      child = cp.spawn(cfg.ttsShell, args, {
+        stdio: ["pipe", "ignore", "ignore"], detached: platform() !== "win32",
+        env: { ...baseEnv, ...(voice ? { OPENCODE_VOICE_EDGE_VOICE: voice } : {}), OPENCODE_TTS_QUEUED_AT_MS: String(queuedAt) },
+      })
+      st.current = child
+      const finished = waitExit(child)
+      child.stdin?.on("error", () => {}) // stop/error may close the receiver while deltas still arrive
+      for (const text of pending.splice(0)) child.stdin?.write(text)
+      if (ended) child.stdin?.end()
+      await finished
+      if (st.current === child) st.current = undefined
+    })
+  }).catch((error) => console.warn(`[voice] Streaming speech failed: ${error instanceof Error ? error.message : "unknown error"}`))
+  return {
+    finished: st.queue,
+    write(text: string) {
+      if (ended || state().generation !== generation || !text) return
+      const remaining = cfg.ttsMaxChars > 0 ? cfg.ttsMaxChars - characters : Infinity
+      const truncated = text.length > remaining
+      if (truncated) text = text.slice(0, remaining).replace(/\S+$/, "")
+      characters += text.length
+      if (text) {
+        if (child) {
+          if (child.stdin && !child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.write(text)
+        } else pending.push(text)
+      }
+      if (truncated || (cfg.ttsMaxChars > 0 && characters >= cfg.ttsMaxChars)) end()
+    },
+    end,
+  }
+}
+
+/** Keep unfinished words and Markdown constructs back, not the entire response. */
+export class StreamingText {
+  private raw = ""
+  private emitted = ""
+
+  append(delta: string): string {
+    this.raw += delta
+    return this.take(false)
+  }
+
+  finish(fullText?: string): string {
+    if (fullText !== undefined) this.raw = fullText
+    return this.take(true)
+  }
+
+  private take(final: boolean): string {
+    let text = this.raw.replace(/```[\s\S]*?```/g, " ")
+    const fence = text.indexOf("```")
+    if (fence >= 0) text = text.slice(0, fence)
+    text = text.replace(/`[^`]*`/g, " ")
+    const inline = text.indexOf("`")
+    if (inline >= 0) text = text.slice(0, inline)
+    text = text.replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    if (!final) {
+      const link = text.search(/!?\[[^\]]*(?:\](?:\([^)]*)?)?$/)
+      if (link >= 0) text = text.slice(0, link)
+      const boundary = text.search(/\s+\S*$/)
+      // Keep a delimiter so a standalone "## " or "1. " is recognized as Markdown.
+      text = boundary >= 0 ? text.slice(0, boundary + 1) : ""
+    }
+    // Paragraph punctuation cannot be inserted retroactively after a spoken word.
+    let clean = sanitize(text, 0, true)
+    if (clean && !final) clean += " "
+    if (!clean.startsWith(this.emitted)) return ""
+    const next = clean.slice(this.emitted.length)
+    this.emitted = clean
+    return next
+  }
+}
+
 export function stopSpeaking(): void {
   const st = state()
   st.generation++ // drop anything still queued
@@ -235,7 +331,7 @@ export async function claimOnce(key: string): Promise<boolean> {
 }
 
 /** Strip markdown/code/URLs so the spoken text reads like prose. */
-export function sanitize(text: string, maxChars: number): string {
+export function sanitize(text: string, maxChars: number, flattenWhitespace = false): string {
   let out = text
   out = out.replace(/```[\s\S]*?```/g, " ") // fenced code blocks
   out = out.replace(/`[^`]*`/g, " ") // inline code
@@ -247,9 +343,12 @@ export function sanitize(text: string, maxChars: number): string {
   out = out.replace(/^\s*[-*+]\s+/gm, "") // bullets
   out = out.replace(/^\s*\d+[.)]\s+/gm, "") // ordered lists
   out = out.replace(/[*_~|]/g, "") // emphasis / table pipes
-  out = out.replace(/[ \t]+/g, " ")
-  out = out.replace(/\n{2,}/g, ". ")
-  out = out.replace(/\n/g, ", ")
+  if (flattenWhitespace) out = out.replace(/\s+/g, " ")
+  else {
+    out = out.replace(/[ \t]+/g, " ")
+    out = out.replace(/\n{2,}/g, ". ")
+    out = out.replace(/\n/g, ", ")
+  }
   out = out.replace(/\s*\.\s*\./g, ".") // collapse duplicate periods
   out = out.trim()
   if (maxChars > 0 && out.length > maxChars) out = out.slice(0, maxChars)
