@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
+import { rootSession } from "./fixtures/session.js"
 
 const mocked = vi.hoisted(() => ({
   cfg: { tts: true, ttsStreaming: true, ttsEngine: "command", ttsCommand: "cat", ttsReasoning: false, ttsMaxChars: 0, ttsTimeoutMs: 600_000 },
@@ -30,7 +31,7 @@ beforeEach(() => {
 })
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup() })
 
-async function harness(get = vi.fn(async (_input: unknown) => ({}))) {
+async function harness(get = vi.fn(async ({ sessionID }: { sessionID: string }) => rootSession(sessionID))) {
   let wake: (() => void) | undefined
   let ended = false
   const events: { event: unknown; done: () => void }[] = []
@@ -85,7 +86,7 @@ it("cancels active speech when configuration is disabled", async () => {
 it("does not start speech when teardown occurs during asynchronous session lookup", async () => {
   let release!: () => void
   const waiting = new Promise<void>((resolve) => { release = resolve })
-  const get = vi.fn(async () => { await waiting; return {} })
+  const get = vi.fn(async ({ sessionID }: { sessionID: string }) => { await waiting; return rootSession(sessionID) })
   const h = await harness(get)
   const sent = h.send("session.text.delta", { ...base, delta: "Stale text " })
   await expect.poll(() => get.mock.calls.length).toBe(1)

@@ -237,7 +237,7 @@ Changes apply immediately — the plugin re-reads `voice.json` on every use.
 
 The plugin also reads the **main agent's** messages aloud:
 
-- **Only the main agent** — messages from subagent/child sessions are never spoken.
+- **Root sessions only** — correctly parented subagent/child sessions stay silent by default. API-created automation without `parentID` is a root session and is narrated normally; callers creating children must supply `parentID`. Failed or unknown/malformed session lookups (including wrapped responses or mismatched session IDs) are skipped before speech ownership is claimed, for both streaming and completed speech.
 - **Only assistant prose** — tool calls and shell/command output are not spoken. Code blocks, inline code, URLs and Markdown markup are stripped first so it reads like speech.
 - **Reasoning is opt-in** — the agent's grey "thinking" text is skipped unless you enable it with `OPENCODE_VOICE_TTS_REASONING=1` (or the settings menu). Off by default.
 - Runs in the **server** plugin, so it works in every client (TUI, desktop, web).

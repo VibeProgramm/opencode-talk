@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import plugin from "../index.js";
+import { rootSession } from "./fixtures/session.js";
 
 function makeCtx() {
   const commands: { name: string; execute: (input: any) => Promise<void> }[] = [];
@@ -11,7 +12,7 @@ function makeCtx() {
     },
     session: {
       prompt: async () => ({ id: "msg_1" }),
-      get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID, title: "demo" }),
+      get: async ({ sessionID }: { sessionID: string }) => ({ ...rootSession(sessionID), title: "demo" }),
       interrupt: async () => {},
     },
     event: {

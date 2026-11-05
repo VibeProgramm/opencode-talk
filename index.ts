@@ -253,7 +253,10 @@ export default Plugin.define({
           pendingClaims.set(key, sessionID)
           try {
             const info = await ctx.session.get({ sessionID })
-            if (info.parentID) continue
+            // Only flat, matching V2 session metadata can establish a root.
+            if (!info || typeof info !== "object" || Array.isArray(info) ||
+                typeof info.id !== "string" || !info.id || info.id !== sessionID ||
+                info.parentID !== undefined) continue
             if (disposed || epoch !== claimedEpoch || spoken.has(key)) continue
             if (!(await isSpeakerOwner())) continue
             if (disposed || epoch !== claimedEpoch || spoken.has(key)) continue

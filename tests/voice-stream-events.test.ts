@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import plugin from "../index.js";
+import { rootSession } from "./fixtures/session.js";
 
 it("streams real delta events before ended, filters child/reasoning, and never replays ended", async () => {
   const directory = await mkdtemp(join(tmpdir(), "voice-events-"));
@@ -23,7 +24,7 @@ it("streams real delta events before ended, filters child/reasoning, and never r
   const base = { sessionID: "root", assistantMessageID: `msg_${Date.now()}`, ordinal: 0 };
   const cleanup = await (plugin as any).setup({
     command: { transform: async () => {} },
-    session: { get: async ({ sessionID }: any) => sessionID === "child" ? { parentID: "root" } : {} },
+    session: { get: async ({ sessionID }: { sessionID: string }) => sessionID === "child" ? { ...rootSession(sessionID), parentID: "root" } : rootSession(sessionID) },
     event: { subscribe: async function* () {
       try {
         yield { type: "session.reasoning.ended", data: { ...base, text: "Не читать" } };
