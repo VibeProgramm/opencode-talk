@@ -310,7 +310,28 @@ markers back; the final text event flushes the tail without repeating words
 already sent. Each text part uses one queued child process. Stopping speech
 invalidates queued streams and terminates the active process group.
 
-`ttsMaxChars` is respected without splitting a word (`0` disables the limit).
+`ttsMaxChars` counts Unicode codepoints and is respected without splitting a word
+(`0` disables the limit). Truncation is reported explicitly.
+`ttsTimeoutMs` (or `OPENCODE_VOICE_TTS_TIMEOUT_MS`) defaults to 900000 (15 minutes)
+and limits each streaming receiver's total lifetime from spawn, including input
+and playback. Increase it for longer narration. Lock acquisition has a separate
+wait bound of at most five minutes (or the configured timeout, with a one-second
+minimum); it never steals a live owner's lock merely because it is old.
+
+Streaming keeps at most 16,384 UTF-16 code units per unresolved word/link label, 256 KiB of pending
+UTF-8 input per receiver (including Node's writable buffer), and 64 queued/active
+receivers per process. Oversized constructs, queue overflow, premature exits,
+stdin errors, and timeouts produce sanitized warnings and cancel the affected
+job rather than silently dropping a tail or retrying ambiguous playback.
+Cancellation escalates from SIGTERM to SIGKILL after 250 ms on Unix.
+
+Text-ended closes stdin but retains job ownership until playback finishes.
+Session failure cancels that session's jobs; pause/off/microphone commands remain
+global. Unloading/reloading a plugin cancels its own jobs and retains dedupe
+tombstones: cancelled narration is never replayed or resumed. A final snapshot
+must match the consumed delta prefix; only its missing suffix is appended.
+Streaming punctuation cannot retract whitespace already sent to the receiver.
+
 Reasoning remains opt-in and is narrated only after its part ends. The command
 receives the selected voice in `OPENCODE_VOICE_EDGE_VOICE` and its queue timestamp
 in `OPENCODE_TTS_QUEUED_AT_MS` (Unix milliseconds), which an external stop helper
